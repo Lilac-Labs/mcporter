@@ -1,80 +1,30 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { inspect } from 'node:util';
-import type { CallResult, ImageContent } from '../result-utils.js';
+import type { CallResult } from '../result-utils.js';
 import { logWarn } from './logger-context.js';
 
 export type OutputFormat = 'auto' | 'text' | 'markdown' | 'json' | 'raw';
 const RAW_INSPECT_DEPTH = 8;
 
+type RenderableKind = 'json' | 'markdown' | 'text' | 'raw';
+
+interface RenderableOutput {
+  kind: RenderableKind;
+  value: unknown;
+}
+
+const PREFERRED_OUTPUT_BY_FORMAT: Record<OutputFormat, RenderableKind[]> = {
+  auto: ['json', 'markdown', 'text', 'raw'],
+  text: ['text', 'markdown', 'json', 'raw'],
+  markdown: ['markdown', 'text', 'json', 'raw'],
+  json: ['json', 'raw'],
+  raw: ['raw'],
+};
+
 export function printCallOutput<T>(wrapped: CallResult<T>, raw: T, format: OutputFormat): void {
-  switch (format) {
-    case 'raw': {
-      printRaw(raw);
-      return;
-    }
-    case 'json': {
-      const jsonValue = wrapped.json();
-      if (jsonValue !== null && attemptPrintJson(jsonValue)) {
-        return;
-      }
-      printRaw(raw);
-      return;
-    }
-    case 'markdown': {
-      const markdown = wrapped.markdown();
-      if (typeof markdown === 'string') {
-        console.log(markdown);
-        return;
-      }
-      const text = wrapped.text();
-      if (typeof text === 'string') {
-        console.log(text);
-        return;
-      }
-      const jsonValue = wrapped.json();
-      if (jsonValue !== null && attemptPrintJson(jsonValue)) {
-        return;
-      }
-      printRaw(raw);
-      return;
-    }
-    case 'text': {
-      const text = wrapped.text();
-      if (typeof text === 'string') {
-        console.log(text);
-        return;
-      }
-      const markdown = wrapped.markdown();
-      if (typeof markdown === 'string') {
-        console.log(markdown);
-        return;
-      }
-      const jsonValue = wrapped.json();
-      if (jsonValue !== null && attemptPrintJson(jsonValue)) {
-        return;
-      }
-      printRaw(raw);
-      return;
-    }
-    default: {
-      const jsonValue = wrapped.json();
-      if (jsonValue !== null && attemptPrintJson(jsonValue)) {
-        return;
-      }
-      const markdown = wrapped.markdown();
-      if (typeof markdown === 'string') {
-        console.log(markdown);
-        return;
-      }
-      const text = wrapped.text();
-      if (typeof text === 'string') {
-        console.log(text);
-        return;
-      }
-      printRaw(raw);
-    }
-  }
+  const preferredKinds = PREFERRED_OUTPUT_BY_FORMAT[format];
+  const renderable = resolveRenderableOutput(wrapped, raw, preferredKinds);
+  emitRenderableOutput(renderable);
 }
 
 export function tailLogIfRequested(result: unknown, enabled: boolean): void {
@@ -121,61 +71,52 @@ export function tailLogIfRequested(result: unknown, enabled: boolean): void {
   }
 }
 
-export function saveCallImagesIfRequested<T>(wrapped: CallResult<T>, outputDir: string | undefined): void {
-  if (!outputDir) {
-    return;
-  }
-  const images = wrapped.images();
-  if (!images || images.length === 0) {
-    return;
-  }
-  const resolvedDir = path.resolve(outputDir);
-  try {
-    fs.mkdirSync(resolvedDir, { recursive: true });
-  } catch (error) {
-    logWarn(`Unable to create image output directory ${resolvedDir}: ${(error as Error).message}`);
-    return;
-  }
-  writeImages(images, resolvedDir);
-}
-
-function writeImages(images: ImageContent[], outputDir: string): void {
-  for (let i = 0; i < images.length; i++) {
-    const img = images[i];
-    if (!img) {
+function resolveRenderableOutput<T>(
+  wrapped: CallResult<T>,
+  raw: T,
+  preferredKinds: RenderableKind[]
+): RenderableOutput {
+  for (const kind of preferredKinds) {
+    if (kind === 'json') {
+      const jsonValue = wrapped.json();
+      if (jsonValue !== null) {
+        return { kind, value: jsonValue };
+      }
       continue;
     }
-    const ext = extensionFromMimeType(img.mimeType);
-    const outputPath = resolveImageOutputPath(outputDir, i + 1, ext);
-    try {
-      const buffer = Buffer.from(img.data, 'base64');
-      fs.writeFileSync(outputPath, buffer);
-      console.error(`[mcporter] Saved image: ${outputPath} (${buffer.length} bytes, ${img.mimeType})`);
-    } catch (writeError) {
-      logWarn(`Failed to save image ${i + 1} (${img.mimeType}): ${(writeError as Error).message}`);
+    if (kind === 'markdown') {
+      const markdown = wrapped.markdown();
+      if (typeof markdown === 'string') {
+        return { kind, value: markdown };
+      }
+      continue;
+    }
+    if (kind === 'text') {
+      const text = wrapped.text();
+      if (typeof text === 'string') {
+        return { kind, value: text };
+      }
+      continue;
+    }
+    if (kind === 'raw') {
+      return { kind, value: raw };
     }
   }
+  return { kind: 'raw', value: raw };
 }
 
-function extensionFromMimeType(mimeType: string): string {
-  const subtype = mimeType.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
-  if (subtype && /^[a-z0-9.+-]+$/.test(subtype)) {
-    return subtype;
-  }
-  return 'png';
-}
-
-function resolveImageOutputPath(outputDir: string, imageIndex: number, extension: string): string {
-  const baseName = `image-${imageIndex}`;
-  let attempt = 0;
-  while (true) {
-    const suffix = attempt === 0 ? '' : `-${attempt}`;
-    const candidate = path.join(outputDir, `${baseName}${suffix}.${extension}`);
-    if (!fs.existsSync(candidate)) {
-      return candidate;
+function emitRenderableOutput(renderable: RenderableOutput): void {
+  if (renderable.kind === 'json') {
+    if (!attemptPrintJson(renderable.value)) {
+      printRaw(renderable.value);
     }
-    attempt += 1;
+    return;
   }
+  if (renderable.kind === 'markdown' || renderable.kind === 'text') {
+    console.log(String(renderable.value));
+    return;
+  }
+  printRaw(renderable.value);
 }
 
 function attemptPrintJson(value: unknown): boolean {

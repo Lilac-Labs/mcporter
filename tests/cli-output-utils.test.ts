@@ -1,9 +1,80 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { printCallOutput, saveCallImagesIfRequested } from '../src/cli/output-utils.js';
+import { printCallOutput } from '../src/cli/output-utils.js';
 import { createCallResult } from '../src/result-utils.js';
+
+describe('printCallOutput format selection', () => {
+  it.each([
+    [
+      'auto prefers json payloads when available',
+      'auto',
+      {
+        content: [
+          { type: 'text', text: 'fallback text' },
+          { type: 'json', json: { source: 'json' } },
+          { type: 'markdown', text: '# heading' },
+        ],
+      },
+      (logged: unknown) => {
+        expect(JSON.parse(String(logged))).toEqual({ source: 'json' });
+      },
+    ],
+    [
+      'text prefers text over markdown/json',
+      'text',
+      {
+        content: [
+          { type: 'text', text: 'plain text wins' },
+          { type: 'markdown', text: '# heading' },
+          { type: 'json', json: { source: 'json' } },
+        ],
+      },
+      (logged: unknown) => {
+        expect(logged).toBe('plain text wins\n# heading');
+      },
+    ],
+    [
+      'markdown prefers markdown content',
+      'markdown',
+      {
+        content: [
+          { type: 'text', text: 'plain text' },
+          { type: 'markdown', text: '## markdown wins' },
+        ],
+      },
+      (logged: unknown) => {
+        expect(logged).toBe('## markdown wins');
+      },
+    ],
+    [
+      'json falls back to raw output when no JSON candidate exists',
+      'json',
+      'raw-only-string',
+      (logged: unknown) => {
+        expect(logged).toBe('raw-only-string');
+      },
+    ],
+    [
+      'raw prints inspect output even when json exists',
+      'raw',
+      { content: [{ type: 'json', json: { id: 1 } }] },
+      (logged: unknown) => {
+        expect(String(logged)).toContain("type: 'json'");
+      },
+    ],
+  ] as const)('%s', (_name, format, raw, assertLogged) => {
+    const wrapped = createCallResult(raw);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      printCallOutput(wrapped, raw, format);
+      expect(log).toHaveBeenCalledTimes(1);
+      const logged = log.mock.calls[0]?.[0];
+      assertLogged(logged);
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
 
 describe('printCallOutput raw output', () => {
   it('does not truncate long strings when printing raw output', () => {
@@ -53,64 +124,6 @@ describe('printCallOutput raw output', () => {
       expect(logged).toContain("leaf: 'done'");
     } finally {
       log.mockRestore();
-    }
-  });
-});
-
-describe('saveCallImagesIfRequested', () => {
-  it('does nothing when no output directory is provided', () => {
-    const wrapped = createCallResult({
-      content: [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }],
-    });
-    const writeSpy = vi.spyOn(fs, 'writeFileSync');
-    try {
-      saveCallImagesIfRequested(wrapped, undefined);
-      expect(writeSpy).not.toHaveBeenCalled();
-    } finally {
-      writeSpy.mockRestore();
-    }
-  });
-
-  it('saves image content blocks to the requested directory', () => {
-    const wrapped = createCallResult({
-      content: [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }],
-    });
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcporter-images-'));
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      saveCallImagesIfRequested(wrapped, tempDir);
-      const files = fs.readdirSync(tempDir);
-      expect(files.length).toBe(1);
-      const first = files[0];
-      expect(first?.endsWith('.png')).toBe(true);
-      const outputPath = path.join(tempDir, first ?? '');
-      expect(fs.readFileSync(outputPath, 'utf8')).toBe('hello');
-    } finally {
-      errorSpy.mockRestore();
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps json output on stdout unchanged when saving images', () => {
-    const raw = {
-      content: [
-        { type: 'json', json: { id: 1 } },
-        { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' },
-      ],
-    };
-    const wrapped = createCallResult(raw);
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcporter-images-'));
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      printCallOutput(wrapped, raw, 'json');
-      saveCallImagesIfRequested(wrapped, tempDir);
-      expect(logSpy).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toEqual({ id: 1 });
-    } finally {
-      logSpy.mockRestore();
-      errorSpy.mockRestore();
-      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });

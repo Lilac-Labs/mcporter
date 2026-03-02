@@ -23,9 +23,35 @@ export interface CallArgsParseResult {
 
 type CoercionMode = 'default' | 'raw-strings' | 'none';
 
+interface FlagParseState {
+  coercionMode: CoercionMode;
+}
+
+interface FlagHandlerContext {
+  args: string[];
+  index: number;
+  result: CallArgsParseResult;
+  state: FlagParseState;
+}
+
+type FlagHandler = (context: FlagHandlerContext) => number;
+
+const FLAG_HANDLERS: Record<string, FlagHandler> = {
+  '--server': handleServerFlag,
+  '--mcp': handleServerFlag,
+  '--tool': handleToolFlag,
+  '--timeout': handleTimeoutFlag,
+  '--tail-log': handleTailLogFlag,
+  '--save-images': handleSaveImagesFlag,
+  '--yes': handleNoopFlag,
+  '--raw-strings': handleRawStringsFlag,
+  '--no-coerce': handleNoCoerceFlag,
+  '--args': handleArgsFlag,
+};
+
 export function parseCallArguments(args: string[]): CallArgsParseResult {
   const result: CallArgsParseResult = { args: {}, tailLog: false, output: 'auto' };
-  let coercionMode: CoercionMode = 'default';
+  const flagState: FlagParseState = { coercionMode: 'default' };
   const ephemeral = extractEphemeralServerFlags(args);
   result.ephemeral = ephemeral;
   result.output = consumeOutputFormat(args, {
@@ -39,76 +65,9 @@ export function parseCallArguments(args: string[]): CallArgsParseResult {
       index += 1;
       continue;
     }
-    if (token === '--server' || token === '--mcp') {
-      const value = args[index + 1];
-      if (!value) {
-        throw new Error(`Flag '${token}' requires a value.`);
-      }
-      result.server = value;
-      index += 2;
-      continue;
-    }
-    if (token === '--tool') {
-      const value = args[index + 1];
-      if (!value) {
-        throw new Error(`Flag '${token}' requires a value.`);
-      }
-      result.tool = value;
-      index += 2;
-      continue;
-    }
-    if (token === '--timeout') {
-      result.timeoutMs = consumeTimeoutFlag(args, index, {
-        flagName: '--timeout',
-        missingValueMessage: '--timeout requires a value (milliseconds).',
-      });
-      continue;
-    }
-    if (token === '--tail-log') {
-      result.tailLog = true;
-      index += 1;
-      continue;
-    }
-    if (token === '--save-images') {
-      const value = args[index + 1];
-      if (!value) {
-        throw new Error('--save-images requires a directory path.');
-      }
-      result.saveImagesDir = value;
-      index += 2;
-      continue;
-    }
-    if (token === '--yes') {
-      index += 1;
-      continue;
-    }
-    if (token === '--raw-strings') {
-      coercionMode = 'raw-strings';
-      result.rawStrings = true;
-      index += 1;
-      continue;
-    }
-    if (token === '--no-coerce') {
-      coercionMode = 'none';
-      result.rawStrings = true;
-      index += 1;
-      continue;
-    }
-    if (token === '--args') {
-      const value = args[index + 1];
-      if (!value) {
-        throw new Error('--args requires a JSON value.');
-      }
-      try {
-        const decoded = JSON.parse(value);
-        if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
-          throw new Error('--args must be a JSON object.');
-        }
-        Object.assign(result.args, decoded);
-      } catch (error) {
-        throw new Error(`Unable to parse --args: ${(error as Error).message}`);
-      }
-      index += 2;
+    const flagHandler = FLAG_HANDLERS[token];
+    if (flagHandler) {
+      index = flagHandler({ args, index, result, state: flagState });
       continue;
     }
     positional.push(token);
@@ -194,12 +153,12 @@ export function parseCallArguments(args: string[]): CallArgsParseResult {
     }
     const parsed = parseKeyValueToken(token, positional[index + 1]);
     if (!parsed) {
-      trailingPositional.push(coerceValue(token, coercionMode));
+      trailingPositional.push(coerceValue(token, flagState.coercionMode));
       index += 1;
       continue;
     }
     index += parsed.consumed;
-    const value = coerceValue(parsed.rawValue, coercionMode);
+    const value = coerceValue(parsed.rawValue, flagState.coercionMode);
     if (parsed.key === 'tool' && !result.tool) {
       if (typeof value !== 'string') {
         throw new Error("Argument 'tool' must be a string value.");
@@ -220,6 +179,80 @@ export function parseCallArguments(args: string[]): CallArgsParseResult {
     result.positionalArgs = [...(result.positionalArgs ?? []), ...trailingPositional];
   }
   return result;
+}
+
+function handleServerFlag(context: FlagHandlerContext): number {
+  const token = context.args[context.index] ?? '--server';
+  context.result.server = consumeFlagValue(context.args, context.index, token);
+  return context.index + 2;
+}
+
+function handleToolFlag(context: FlagHandlerContext): number {
+  context.result.tool = consumeFlagValue(context.args, context.index, '--tool');
+  return context.index + 2;
+}
+
+function handleTimeoutFlag(context: FlagHandlerContext): number {
+  context.result.timeoutMs = consumeTimeoutFlag(context.args, context.index, {
+    flagName: '--timeout',
+    missingValueMessage: '--timeout requires a value (milliseconds).',
+  });
+  // consumeTimeoutFlag removes the flag/value pair in-place; stay on the same index.
+  return context.index;
+}
+
+function handleTailLogFlag(context: FlagHandlerContext): number {
+  context.result.tailLog = true;
+  return context.index + 1;
+}
+
+function handleSaveImagesFlag(context: FlagHandlerContext): number {
+  context.result.saveImagesDir = consumeFlagValue(
+    context.args,
+    context.index,
+    '--save-images',
+    '--save-images requires a directory path.'
+  );
+  return context.index + 2;
+}
+
+function handleNoopFlag(context: FlagHandlerContext): number {
+  return context.index + 1;
+}
+
+function handleRawStringsFlag(context: FlagHandlerContext): number {
+  context.state.coercionMode = 'raw-strings';
+  context.result.rawStrings = true;
+  return context.index + 1;
+}
+
+function handleNoCoerceFlag(context: FlagHandlerContext): number {
+  context.state.coercionMode = 'none';
+  context.result.rawStrings = true;
+  return context.index + 1;
+}
+
+function handleArgsFlag(context: FlagHandlerContext): number {
+  const raw = consumeFlagValue(context.args, context.index, '--args', '--args requires a JSON value.');
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Unable to parse --args: ${(error as Error).message}`);
+  }
+  if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
+    throw new Error('Unable to parse --args: --args must be a JSON object.');
+  }
+  Object.assign(context.result.args, decoded);
+  return context.index + 2;
+}
+
+function consumeFlagValue(args: string[], index: number, token: string, missingValueMessage?: string): string {
+  const value = args[index + 1];
+  if (value) {
+    return value;
+  }
+  throw new Error(missingValueMessage ?? `Flag '${token}' requires a value.`);
 }
 
 interface ParsedKeyValueToken {

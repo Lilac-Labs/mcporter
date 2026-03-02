@@ -11,6 +11,12 @@ describe('parseCallArguments', () => {
     expect(parsed.args.format).toBe('json');
   });
 
+  it.each(['--server', '--mcp'] as const)('captures %s as server override', (flag) => {
+    const parsed = parseCallArguments([flag, 'linear', 'list_documents']);
+    expect(parsed.server).toBe('linear');
+    expect(parsed.tool).toBe('list_documents');
+  });
+
   it('consumes function-style call expressions with HTTP selectors', () => {
     const call = 'https://example.com/mcp.getComponents(limit: 3, projectId: "123")';
     const parsed = parseCallArguments([call]);
@@ -50,17 +56,14 @@ describe('parseCallArguments', () => {
     warnSpy.mockRestore();
   });
 
-  it('coerces numeric strings to numbers by default', () => {
-    const parsed = parseCallArguments(['server.tool', 'code=123456']);
-    expect(parsed.args.code).toBe(123456);
-    expect(typeof parsed.args.code).toBe('number');
-  });
-
-  it('preserves numeric strings when --raw-strings flag is used', () => {
-    const parsed = parseCallArguments(['--raw-strings', 'server.tool', 'code=123456']);
-    expect(parsed.args.code).toBe('123456');
-    expect(typeof parsed.args.code).toBe('string');
-    expect(parsed.rawStrings).toBe(true);
+  it.each([
+    ['default', [], 123456, 'number'],
+    ['raw-strings', ['--raw-strings'], '123456', 'string'],
+    ['no-coerce', ['--no-coerce'], '123456', 'string'],
+  ] as const)('handles numeric coercion in %s mode', (_mode, flags, expected, expectedType) => {
+    const parsed = parseCallArguments([...flags, 'server.tool', 'code=123456']);
+    expect(parsed.args.code).toBe(expected);
+    expect(typeof parsed.args.code).toBe(expectedType);
   });
 
   it('preserves leading zeros when --raw-strings flag is used', () => {
@@ -99,7 +102,10 @@ describe('parseCallArguments', () => {
     expect(parsed.saveImagesDir).toBe('./tmp/images');
   });
 
-  it('throws when --save-images has no value', () => {
-    expect(() => parseCallArguments(['--save-images'])).toThrow(/--save-images requires a directory path/);
+  it.each([
+    ['--save-images', /--save-images requires a directory path/],
+    ['--args', /--args requires a JSON value/],
+  ] as const)('throws when %s is missing a value', (flag, expectedError) => {
+    expect(() => parseCallArguments([flag])).toThrow(expectedError);
   });
 });
