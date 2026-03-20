@@ -82,6 +82,15 @@ function resolveRenderableOutput<T>(
       if (jsonValue !== null) {
         return { kind, value: jsonValue };
       }
+      // wrapped.json() may return null even when raw is valid JSON-serializable
+      // (e.g. MCP tool results that aren't wrapped in a structuredContent envelope).
+      // Fall back to serializing raw directly.
+      try {
+        JSON.stringify(raw);
+        return { kind, value: raw };
+      } catch {
+        // raw is not JSON-serializable, continue to next preferred kind
+      }
       continue;
     }
     if (kind === 'markdown') {
