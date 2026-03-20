@@ -97,9 +97,13 @@ jobs:
         run: |
           mkdir -p release-assets
           VERSION="${GITHUB_REF_NAME#v}"
+          # Versioned npm tarball + checksums
           cp "mcporter-${VERSION}.tgz" release-assets/
           cp "mcporter-${VERSION}.tgz.sha1" release-assets/
           cp "mcporter-${VERSION}.tgz.sha256" release-assets/
+          # Stable name so latest/download/mcporter.tgz always works
+          cp "mcporter-${VERSION}.tgz" release-assets/mcporter.tgz
+          # Bun binaries
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release-assets/ \;
           ls -lh release-assets/
 
@@ -121,8 +125,8 @@ jobs:
             echo ""
             echo "### Install"
             echo '```bash'
-            echo "# via npm tarball from this release"
-            echo "npm install https://github.com/Lilac-Labs/mcporter/releases/download/v${VERSION}/mcporter-${VERSION}.tgz"
+            echo "# always points to the latest release"
+            echo "npm install https://github.com/Lilac-Labs/mcporter/releases/latest/download/mcporter.tgz"
             echo '```'
           } > release-notes.md
 
@@ -134,5 +138,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --repo Lilac-Labs/mcporter \
             --title "mcporter ${GITHUB_REF_NAME}" \
+            --latest \
             --notes-file release-notes.md \
             release-assets/*
