@@ -84,12 +84,15 @@ function resolveRenderableOutput<T>(
       }
       // wrapped.json() may return null even when raw is valid JSON-serializable
       // (e.g. MCP tool results that aren't wrapped in a structuredContent envelope).
-      // Fall back to serializing raw directly.
-      try {
-        JSON.stringify(raw);
-        return { kind, value: raw };
-      } catch {
-        // raw is not JSON-serializable, continue to next preferred kind
+      // Fall back to serializing raw directly — but only for objects/arrays that
+      // have meaningful JSON structure.  Plain strings are better emitted as raw.
+      if (raw !== null && raw !== undefined && typeof raw === 'object') {
+        try {
+          JSON.stringify(raw);
+          return { kind, value: raw };
+        } catch {
+          // raw is not JSON-serializable, continue to next preferred kind
+        }
       }
       continue;
     }
